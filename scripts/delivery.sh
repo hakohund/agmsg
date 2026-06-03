@@ -40,6 +40,7 @@ resolve_hooks_file() {
     claude-code) echo "$project/.claude/settings.local.json" ;;
     codex)       echo "$project/.codex/hooks.json" ;;
     gemini|antigravity) echo "$project/.agent/rules/agmsg.md" ;;
+    copilot)     echo "$project/.github/hooks/agmsg.json" ;;
     *) echo "Unknown agent type: $type" >&2; return 1 ;;
   esac
 }
@@ -129,6 +130,57 @@ prune_empty_hooks() {
   "
 }
 
+apply_settings_copilot() {
+  local type="$1"
+  local project="$2"
+  local mode="$3"
+  local hooks_file
+  hooks_file=$(resolve_hooks_file "$type" "$project")
+
+  # Validate the mode BEFORE touching any existing file. Rejecting
+  # monitor/both must not destroy a working turn hook.
+  case "$mode" in
+    turn|off) ;;
+    monitor|both)
+      echo "Error: '$mode' mode is not supported for $type (no Monitor-tool equivalent). Use 'turn' or 'off'." >&2
+      return 1
+      ;;
+    *)
+      echo "Unknown mode: $mode (use turn|off)" >&2
+      return 1
+      ;;
+  esac
+
+  # Strip first so re-applying turn is an idempotent rewrite and turn->off
+  # cleanly removes the file.
+  rm -f "$hooks_file"
+
+  if [ "$mode" = "turn" ]; then
+    mkdir -p "$(dirname "$hooks_file")"
+    local cmd="'$SKILL_DIR/scripts/check-inbox.sh' '$type' '$project'"
+    # json_quote handles JSON-string escaping for arbitrary command strings
+    # (project paths may contain JSON-special chars).
+    local cmd_json
+    cmd_json=$(sqlite3 :memory: "SELECT json_quote('$(printf '%s' "$cmd" | sed "s/'/''/g")');")
+    # Use PascalCase 'Stop' trigger so the input payload field names match
+    # the snake_case form (session_id) that check-inbox.sh already parses.
+    cat <<EOF > "$hooks_file"
+{
+  "version": 1,
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "bash": $cmd_json,
+        "timeoutSec": 30
+      }
+    ]
+  }
+}
+EOF
+  fi
+}
+
 apply_settings_gemini() {
   local type="$1"
   local project="$2"
@@ -166,6 +218,11 @@ apply_settings() {
 
   if [ "$type" = "gemini" ] || [ "$type" = "antigravity" ]; then
     apply_settings_gemini "$type" "$project" "$mode"
+    return
+  fi
+
+  if [ "$type" = "copilot" ]; then
+    apply_settings_copilot "$type" "$project" "$mode"
     return
   fi
 
@@ -316,7 +373,7 @@ do_status() {
   if [ -n "$TYPE" ] && [ -n "$PROJECT" ]; then
     local hf
     hf=$(resolve_hooks_file "$TYPE" "$PROJECT")
-    if [ "$TYPE" = "gemini" ] || [ "$TYPE" = "antigravity" ]; then
+    if [ "$TYPE" = "gemini" ] || [ "$TYPE" = "antigravity" ] || [ "$TYPE" = "copilot" ]; then
       local mode="off"
       if [ -f "$hf" ]; then
         mode="turn"
@@ -347,7 +404,7 @@ do_status() {
     fi
   fi
 
-  if [ -n "$TYPE" ] && [ -n "$PROJECT" ] && [ "$TYPE" != "gemini" ] && [ "$TYPE" != "antigravity" ]; then
+  if [ -n "$TYPE" ] && [ -n "$PROJECT" ] && [ "$TYPE" != "gemini" ] && [ "$TYPE" != "antigravity" ] && [ "$TYPE" != "copilot" ]; then
     local hooks_file
     hooks_file=$(resolve_hooks_file "$TYPE" "$PROJECT")
     if [ -f "$hooks_file" ]; then
