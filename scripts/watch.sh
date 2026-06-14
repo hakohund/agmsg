@@ -79,11 +79,28 @@ if [ -f "$PIDFILE" ]; then
 fi
 
 echo $$ > "$PIDFILE"
-# EXIT only removes the pidfile if it still records our pid. A successor
-# watcher (Monitor re-invoked for the same session_id) overwrites $PIDFILE
-# with its own pid before killing us; without this guard our EXIT trap
-# would erase the successor's record. See #66.
-trap '[ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"' EXIT
+# Readiness sentinels this watcher created (see #108). Populated once the
+# subscription is resolved; removed on exit so the file is present iff a live
+# watcher is currently receiving for that role.
+READY_FILES=""
+cleanup() {
+  # EXIT only removes the pidfile if it still records our pid. A successor
+  # watcher (Monitor re-invoked for the same session_id) overwrites $PIDFILE
+  # with its own pid before killing us; without this guard our EXIT trap
+  # would erase the successor's record. See #66.
+  [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"
+  if [ -n "$READY_FILES" ]; then
+    while IFS= read -r _rf; do
+      [ -z "$_rf" ] && continue
+      # Only remove a sentinel we still own. A successor actas watcher for the
+      # same (team, name) overwrites it with its own session_id before this one
+      # exits; without this guard our EXIT could delete the live successor's
+      # sentinel. Mirrors the pidfile guard above. See #108 review.
+      [ "$(cat "$_rf" 2>/dev/null)" = "$SESSION_ID" ] && rm -f "$_rf" 2>/dev/null || true
+    done <<< "$READY_FILES"
+  fi
+}
+trap cleanup EXIT
 trap 'exit 0' INT TERM HUP
 
 # Resolve subscription set.
@@ -203,6 +220,24 @@ if [ -z "$LAST" ]; then
   fi
   case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
   persist_watermark
+fi
+
+# Signal readiness. Once the subscription is resolved and the watermark is set,
+# this watcher will deliver anything that arrives from here on, so it is safe
+# for a leader to start sending. Only exclusive (actas) watchers signal — a
+# spawned agent always starts its watcher in actas mode — and the sentinel is
+# removed on exit (cleanup), so it tracks "a live watcher is receiving for this
+# role". `spawn --wait-ready` polls for it. See #108.
+if [ -n "$ACTIVE_NAME" ]; then
+  while IFS=$'\t' read -r _rt _ra; do
+    [ -z "$_rt" ] && continue
+    _rp="$(agmsg_ready_path "$_rt" "$_ra")"
+    # Stamp our session_id so cleanup (and a successor watcher) can tell whose
+    # sentinel it is — keeps "present iff a live watcher is receiving" honest
+    # across a quick actas restart. See #108 review.
+    printf '%s\n' "$SESSION_ID" > "$_rp" 2>/dev/null || true
+    READY_FILES="${READY_FILES:+$READY_FILES$'\n'}$_rp"
+  done <<< "$PAIRS"
 fi
 
 while true; do

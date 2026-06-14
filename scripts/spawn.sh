@@ -32,6 +32,15 @@ set -euo pipefail
 #                      generated boot script (an executable file the terminal
 #                      should run). Overrides $AGMSG_TERMINAL and config
 #                      `spawn.terminal`.
+#   --no-wait          don't block on the readiness handshake; return as soon
+#                      as the agent is launched (fire-and-forget)
+#   --ready-timeout N  seconds to wait for readiness before giving up
+#                      (default 90; on timeout, prints status=timeout, exit 3)
+#
+# Readiness: by default spawn blocks until the new agent's watcher attaches and
+# is receiving (it prints `status=ready ...`), so a leader can safely send work
+# right after spawn returns without racing the agent's cold start. Codex has no
+# Monitor, so the wait is skipped for codex.
 #
 # Scope note: claude-code/codex only; macOS is the primary target, Linux and
 # Windows are best-effort (no guarantee — please open an issue/PR if a given
@@ -67,6 +76,8 @@ TEAM=""
 TMUX_TARGET="pane"   # pane | window
 SPLIT="h"            # h | v
 TERMINAL_TMPL=""     # --terminal override (resolved below if empty)
+WAIT_READY=1         # block until the spawned agent's watcher attaches
+READY_TIMEOUT=90     # seconds to wait for readiness before giving up
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,11 +86,14 @@ while [ $# -gt 0 ]; do
     --window)  TMUX_TARGET="window"; shift ;;
     --split)   SPLIT="${2:?--split needs h|v}"; shift 2 ;;
     --terminal) TERMINAL_TMPL="${2:?--terminal needs a template}"; shift 2 ;;
+    --no-wait) WAIT_READY=0; shift ;;
+    --ready-timeout) READY_TIMEOUT="${2:?--ready-timeout needs seconds}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
 case "$SPLIT" in h|v) ;; *) die "--split must be 'h' or 'v'" ;; esac
+case "$READY_TIMEOUT" in ''|*[!0-9]*) die "--ready-timeout must be a whole number of seconds" ;; esac
 
 # Resolve the terminal override for the non-tmux path:
 #   --terminal  >  $AGMSG_TERMINAL  >  config spawn.terminal
@@ -345,4 +359,35 @@ place_and_launch() {
   echo "spawned ${AGENT_TYPE} '${NAME}' in a new terminal window"
 }
 
+# Readiness handshake (#108). The spawned agent's actas flow starts its watcher
+# in exclusive mode, which touches a ready sentinel once it's actually
+# receiving. Block until that appears so the leader doesn't send a job into the
+# cold-start window (before the watcher attaches) and lose it.
+#
+# Codex has no Monitor/watcher, so nothing would ever touch the sentinel —
+# skip the wait for codex (its receive is poll-based anyway).
+READY_PATH="$(agmsg_ready_path "$TEAM" "$NAME")"
+if [ "$AGENT_TYPE" = "codex" ] && [ "$WAIT_READY" = "1" ]; then
+  WAIT_READY=0
+  echo "spawn: codex has no Monitor — skipping readiness wait (--no-wait implied)" >&2
+fi
+
+# Clear any stale sentinel before launching so we only observe THIS spawn's
+# watcher attaching.
+[ "$WAIT_READY" = "1" ] && rm -f "$READY_PATH" 2>/dev/null || true
+
 place_and_launch
+
+if [ "$WAIT_READY" = "1" ]; then
+  waited=0
+  while [ ! -e "$READY_PATH" ]; do
+    if [ "$waited" -ge "$READY_TIMEOUT" ]; then
+      echo "status=timeout name=${NAME} team=${TEAM} after=${READY_TIMEOUT}s"
+      echo "spawn: '${NAME}' did not signal ready within ${READY_TIMEOUT}s — it may still be booting; re-spawn or raise --ready-timeout" >&2
+      exit 3
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "status=ready name=${NAME} team=${TEAM} after=${waited}s"
+fi

@@ -53,6 +53,18 @@ actas_lock_path() {
   printf '%s/actas.%s__%s.session' "$(_actas_lock_dir)" "$t" "$a"
 }
 
+# Readiness sentinel path for (team, agent). watch.sh creates this when an
+# exclusive (actas) watcher attaches and removes it on exit, so the file is
+# present iff a live watcher is currently receiving for that role. `spawn`
+# uses it to block until a freshly launched agent is actually listening,
+# instead of racing the agent's first push. Same encoding as the lock path so
+# both scripts agree without env plumbing. See #108.
+agmsg_ready_path() {
+  local team="$1" agent="$2"
+  local t a; t="$(_actas_lock_encode "$team")"; a="$(_actas_lock_encode "$agent")"
+  printf '%s/ready.%s__%s' "$(_actas_lock_dir)" "$t" "$a"
+}
+
 # Read the owner session_id of a lock file. Empty if no lock or unreadable.
 actas_lock_owner() {
   local lock; lock="$(actas_lock_path "$1" "$2")"

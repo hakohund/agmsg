@@ -111,7 +111,7 @@ teardown() {
 @test "spawn: --team disambiguates a multi-team project" {
   bash "$SCRIPTS/join.sh" team-a existing-a claude-code "$PROJ"
   bash "$SCRIPTS/join.sh" team-b existing-b codex "$PROJ"
-  run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" --team team-b
+  run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" --team team-b --no-wait
   [ "$status" -eq 0 ]
   run bash "$SCRIPTS/identities.sh" "$PROJ" claude-code
   [[ "$output" =~ team-b$'\t'alice ]]
@@ -121,7 +121,7 @@ teardown() {
 
 @test "spawn: pre-joins the name and launches the CLI with the actas prompt" {
   bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
-  run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ"
+  run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" --no-wait
   [ "$status" -eq 0 ]
   [[ "$output" =~ "spawned claude-code 'alice'" ]]
 
@@ -152,7 +152,7 @@ teardown() {
   cp -R "$TEST_SKILL_DIR" "$custom"
   bash "$custom/scripts/join.sh" myteam existing claude-code "$PROJ"
   run env AGMSG_TERMINAL="$STUB_BIN/record.sh {cmd}" \
-    bash "$custom/scripts/spawn.sh" claude-code alice --project "$PROJ"
+    bash "$custom/scripts/spawn.sh" claude-code alice --project "$PROJ" --no-wait
   [ "$status" -eq 0 ]
   boot="$(cat "$CAPTURE")"
   run cat "$boot"
@@ -194,4 +194,40 @@ teardown() {
   run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "held by a live session" ]]
+}
+
+# --- readiness handshake (#108) ---
+
+@test "spawn: readiness handshake returns status=ready when the watcher attaches" {
+  bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
+  mkdir -p "$TEST_SKILL_DIR/run"
+  local ready="$TEST_SKILL_DIR/run/ready.myteam__alice"
+  # The terminal "launch" just touches the ready sentinel (and comments out the
+  # boot script so its interactive shell never runs in the test).
+  run env -u TMUX bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" \
+    --ready-timeout 10 --terminal "touch $ready # {cmd}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"status=ready"* ]]
+}
+
+@test "spawn: readiness handshake times out (status=timeout, exit 3) when nothing attaches" {
+  bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
+  run env -u TMUX bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" \
+    --ready-timeout 2 --terminal "true # {cmd}"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"status=timeout"* ]]
+}
+
+@test "spawn: --no-wait returns immediately with no readiness status" {
+  bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
+  run bash "$SCRIPTS/spawn.sh" claude-code alice --project "$PROJ" --no-wait
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status="* ]]
+}
+
+@test "spawn: codex skips the readiness wait (no Monitor)" {
+  bash "$SCRIPTS/join.sh" myteam existing codex "$PROJ"
+  run bash "$SCRIPTS/spawn.sh" codex reviewer --project "$PROJ"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skipping readiness wait"* ]]
 }

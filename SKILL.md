@@ -103,16 +103,23 @@ Do NOT manually edit config files. Always use join.sh.
 # Spawn a NEW agent process that takes an actas identity on boot.
 # Pre-joins <name> to a team, then launches the agent CLI in a tmux pane/window
 # (when run inside tmux) or a new OS terminal, with `/agmsg actas <name>` as the
-# initial prompt. claude-code/codex only; macOS primary, Linux/Windows best-effort.
-# Non-tmux + no usable terminal (headless) errors out.
-#   --project <path>   project to launch in (default: $PWD)
-#   --team <team>      team to join into (default: auto-resolved from the project)
-#   --window           new tmux window instead of splitting the current one
-#   --split h|v        tmux split direction (default h)
-#   --terminal <tmpl>  terminal command template ({cmd} = path to the boot
-#                      script) for the non-tmux path; overrides $AGMSG_TERMINAL
-#                      / config spawn.terminal. macOS default uses `open -a`
-#                      (no Automation/TCC permission prompt).
+# initial prompt. By default it BLOCKS until the new agent's watcher attaches
+# (prints `status=ready`), so a leader can send work right after spawn returns
+# without losing it to the agent's cold start. claude-code/codex only; macOS
+# primary, Linux/Windows best-effort. Non-tmux + no usable terminal (headless)
+# errors out.
+#   --project <path>     project to launch in (default: $PWD)
+#   --team <team>        team to join into (default: auto-resolved from project)
+#   --window             new tmux window instead of splitting the current one
+#   --split h|v          tmux split direction (default h)
+#   --terminal <tmpl>    terminal command template ({cmd} = path to the boot
+#                        script) for the non-tmux path; overrides $AGMSG_TERMINAL
+#                        / config spawn.terminal. macOS default uses `open -a`
+#                        (no Automation/TCC permission prompt).
+#   --no-wait            don't block on readiness (fire-and-forget)
+#   --ready-timeout N    seconds to wait for readiness (default 90; on timeout
+#                        prints status=timeout and exits 3). Codex skips the
+#                        wait (it has no Monitor).
 ~/.agents/skills/agmsg/scripts/spawn.sh <claude-code|codex> <name> [options]
 ```
 

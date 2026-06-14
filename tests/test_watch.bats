@@ -84,3 +84,74 @@ run_watcher_for() {
   printf '{"session_id":"sess-end"}' | bash "$SCRIPTS/session-end.sh" claude-code "$PROJ" >/dev/null 2>&1 || true
   [ ! -f "$wm" ]
 }
+
+@test "watch: actas-mode watcher creates a ready sentinel and removes it on exit" {
+  local ready="$TEST_SKILL_DIR/run/ready.team__alice"
+  AGMSG_WATCH_INTERVAL=1 bash "$SCRIPTS/watch.sh" "sess-ready" "$PROJ" claude-code alice \
+    >/dev/null 2>&1 &
+  local w=$!
+  # Wait for the watcher to attach and signal readiness.
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -e "$ready" ] && break
+    sleep 0.5
+  done
+  [ -e "$ready" ]
+  kill "$w" 2>/dev/null || true
+  wait "$w" 2>/dev/null || true
+  # Removed on exit (sentinel tracks a live watcher).
+  [ ! -e "$ready" ]
+}
+
+@test "watch: a broad (non-actas) watcher does not create a ready sentinel" {
+  bash "$SCRIPTS/join.sh" team bob claude-code "$PROJ" >/dev/null
+  run_watcher_for "sess-broad" "$TEST_SKILL_DIR/broad.log" 1.5
+  [ ! -e "$TEST_SKILL_DIR/run/ready.team__alice" ]
+  [ ! -e "$TEST_SKILL_DIR/run/ready.team__bob" ]
+}
+
+@test "watch: ready sentinel records the owner session_id" {
+  local ready="$TEST_SKILL_DIR/run/ready.team__alice"
+  AGMSG_WATCH_INTERVAL=1 bash "$SCRIPTS/watch.sh" "sess-own" "$PROJ" claude-code alice \
+    >/dev/null 2>&1 &
+  local w=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$ready" ] && break; sleep 0.5; done
+  [ "$(cat "$ready")" = "sess-own" ]
+  kill "$w" 2>/dev/null || true
+  wait "$w" 2>/dev/null || true
+}
+
+@test "watch: cleanup leaves a sentinel that a successor session re-owned" {
+  local ready="$TEST_SKILL_DIR/run/ready.team__alice"
+  AGMSG_WATCH_INTERVAL=1 bash "$SCRIPTS/watch.sh" "sess-old" "$PROJ" claude-code alice \
+    >/dev/null 2>&1 &
+  local w=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$ready" ] && break; sleep 0.5; done
+  # A successor watcher overwrites the sentinel with its own id.
+  printf 'sess-new\n' > "$ready"
+  kill "$w" 2>/dev/null || true
+  wait "$w" 2>/dev/null || true
+  # The old watcher must NOT delete the successor's live sentinel.
+  [ -f "$ready" ]
+  [ "$(cat "$ready")" = "sess-new" ]
+}
+
+@test "session-start: GCs stale watermark/ready but keeps live ones" {
+  bash "$SCRIPTS/join.sh" team alice claude-code "$PROJ" >/dev/null
+  mkdir -p "$TEST_SKILL_DIR/run"
+  # Stale (owner has no live cc-instance).
+  echo 5 > "$TEST_SKILL_DIR/run/watch.deadsid.watermark"
+  echo deadsid > "$TEST_SKILL_DIR/run/ready.team__ghost"
+  # Live owner.
+  setup_live_owner "$TEST_SKILL_DIR/run" LIVESID
+  echo 7 > "$TEST_SKILL_DIR/run/watch.LIVESID.watermark"
+  echo LIVESID > "$TEST_SKILL_DIR/run/ready.team__live"
+
+  printf '{"session_id":"somesess"}' \
+    | bash "$SCRIPTS/session-start.sh" claude-code "$PROJ" >/dev/null 2>&1 || true
+
+  [ ! -f "$TEST_SKILL_DIR/run/watch.deadsid.watermark" ]
+  [ ! -f "$TEST_SKILL_DIR/run/ready.team__ghost" ]
+  [ -f "$TEST_SKILL_DIR/run/watch.LIVESID.watermark" ]
+  [ -f "$TEST_SKILL_DIR/run/ready.team__live" ]
+}
