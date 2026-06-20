@@ -39,6 +39,9 @@ has_session_start() {
 has_check_inbox() {
   [ -f "$1" ] && grep -q "check-inbox.sh" "$1"
 }
+has_codex_longpoll() {
+  [ -f "$1" ] && grep -q "codex-longpoll.sh" "$1"
+}
 
 settings_file() {
   echo "$TEST_PROJECT/.claude/settings.local.json"
@@ -953,6 +956,136 @@ JSON
   local cw
   cw=$(sqlite3 :memory: "SELECT json_extract(readfile('$hook_file'), '\$.hooks.Stop[0].hooks[0].commandWindows');")
   [ -z "$cw" ]
+}
+
+@test "delivery set longpoll (codex): installs one Stop hook with commandWindows and timeout" {
+  run bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Delivery mode set to 'longpoll'"* ]]
+  [[ "$output" == *"Codex longpoll mode enabled."* ]]
+  [[ "$output" == *"Waits for agmsg messages for up to 8 hours"* ]]
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  [ -f "$hook_file" ]
+  local stop_count cmd timeout cw
+  stop_count=$(sqlite3 :memory: "SELECT json_array_length(json_extract(readfile('$hook_file'), '\$.hooks.Stop'));")
+  cmd=$(sqlite3 :memory: "SELECT json_extract(readfile('$hook_file'), '\$.hooks.Stop[0].hooks[0].command');")
+  timeout=$(sqlite3 :memory: "SELECT json_extract(readfile('$hook_file'), '\$.hooks.Stop[0].hooks[0].timeout');")
+  cw=$(sqlite3 :memory: "SELECT json_extract(readfile('$hook_file'), '\$.hooks.Stop[0].hooks[0].commandWindows');")
+  [ "$stop_count" = "1" ]
+  [[ "$cmd" == *"codex-longpoll.sh"* ]]
+  [ "$timeout" = "86460" ]
+  [ -n "$cw" ]
+  [[ "$cw" == *"codex-longpoll.sh"* ]]
+}
+
+@test "delivery status (codex): reports longpoll before generic turn" {
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+
+  run bash "$SCRIPTS/delivery.sh" status codex "$TEST_PROJECT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "mode: longpoll" ]]
+  [[ ! "$output" =~ "mode: turn" ]]
+}
+
+@test "delivery set longpoll (codex): idempotent across repeats" {
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  local n
+  n=$(sqlite3 :memory: "SELECT json_array_length(json_extract(readfile('$hook_file'), '\$.hooks.Stop'));")
+  [ "$n" = "1" ]
+}
+
+@test "delivery set longpoll (claude-code): rejected without modifying existing hook" {
+  bash "$SCRIPTS/delivery.sh" set turn claude-code "$TEST_PROJECT" >/dev/null
+  local before
+  before=$(cat "$(settings_file)")
+
+  run bash "$SCRIPTS/delivery.sh" set longpoll claude-code "$TEST_PROJECT"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "only supported for codex" ]]
+  [ "$(cat "$(settings_file)")" = "$before" ]
+}
+
+@test "delivery: monitor -> longpoll removes bridge hooks and stops only this project's bridge" {
+  bash "$SCRIPTS/join.sh" team alice codex "$TEST_PROJECT" >/dev/null
+  bash "$SCRIPTS/delivery.sh" set monitor codex "$TEST_PROJECT" >/dev/null
+  mkdir -p "$TEST_SKILL_DIR/run"
+  sleep 60 &
+  local bpid=$!
+  echo "$bpid" > "$TEST_SKILL_DIR/run/codex-bridge.team.alice.pid"
+  echo "pid=$bpid" > "$TEST_SKILL_DIR/run/codex-bridge.team.alice.meta"
+  : > "$TEST_SKILL_DIR/run/codex-bridge.team.alice.log"
+
+  run bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Stopped 1 Codex bridge"* ]]
+  ! kill -0 "$bpid" 2>/dev/null
+  [ ! -f "$TEST_SKILL_DIR/run/codex-bridge.team.alice.pid" ]
+  [ -x "$HOME/.agents/bin/codex" ]
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  has_codex_longpoll "$hook_file"
+  ! has_session_start "$hook_file"
+  ! has_session_end "$hook_file"
+  ! has_check_inbox "$hook_file"
+  kill "$bpid" 2>/dev/null || true
+}
+
+@test "delivery: longpoll -> turn replaces longpoll with check-inbox Stop" {
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+  bash "$SCRIPTS/delivery.sh" set turn codex "$TEST_PROJECT" >/dev/null
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  has_check_inbox "$hook_file"
+  ! has_codex_longpoll "$hook_file"
+}
+
+@test "delivery: longpoll -> off removes agmsg Stop hook" {
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+  bash "$SCRIPTS/delivery.sh" set off codex "$TEST_PROJECT" >/dev/null
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  ! has_codex_longpoll "$hook_file"
+  ! has_check_inbox "$hook_file"
+}
+
+@test "delivery set longpoll: preserves unrelated hooks" {
+  mkdir -p "$TEST_PROJECT/.codex"
+  cat > "$TEST_PROJECT/.codex/hooks.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [
+      {"matcher":"","hooks":[{"type":"command","command":"third-party-start"}]}
+    ],
+    "Stop": [
+      {"matcher":"","hooks":[{"type":"command","command":"third-party-stop"}]}
+    ]
+  }
+}
+JSON
+
+  bash "$SCRIPTS/delivery.sh" set longpoll codex "$TEST_PROJECT" >/dev/null
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  grep -q "third-party-start" "$hook_file"
+  grep -q "third-party-stop" "$hook_file"
+  has_codex_longpoll "$hook_file"
+}
+
+@test "delivery set turn (codex): timeout remains omitted for existing call sites" {
+  bash "$SCRIPTS/delivery.sh" set turn codex "$TEST_PROJECT" >/dev/null
+
+  local hook_file="$TEST_PROJECT/.codex/hooks.json"
+  local timeout
+  timeout=$(sqlite3 :memory: "SELECT json_extract(readfile('$hook_file'), '\$.hooks.Stop[0].hooks[0].timeout');")
+  [ -z "$timeout" ]
 }
 
 # --- Large settings.local.json: must not trip Linux MAX_ARG_STRLEN (#95) ---

@@ -63,3 +63,10 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" =~ "Delivery mode set to 'turn'" ]]
 }
+
+@test "dispatch: codex mode longpoll delegates to delivery" {
+  run bash "$SCRIPTS/dispatch.sh" --type codex --project "$PROJECT_ALICE" -- mode longpoll
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Delivery mode set to 'longpoll'" ]]
+  [[ "$output" =~ "Codex longpoll mode enabled" ]]
+}
