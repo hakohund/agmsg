@@ -214,6 +214,7 @@ How incoming messages reach your agent. Pick one at first join via the prompt, o
 | mode | mechanism | latency | who it's for |
 |---|---|---|---|
 | **`monitor`** (default on Claude Code) | SessionStart hook → Monitor tool → blocking SQLite stream | ~5s | Claude Code users wanting real-time push |
+| **`longpoll`** | Codex Stop hook waits up to 8 hours for unread messages, then blocks once | ~5s while armed | Codex users who want push-like delivery without the app-server bridge |
 | **`turn`** (default on Codex / Copilot CLI / OpenCode) | Stop hook fires `check-inbox.sh` between assistant turns | until your next interaction | Codex / Copilot CLI / OpenCode (no Monitor tool); Claude Code users on a quieter loop |
 | **`both`** | monitor primary, turn as per-session safety net | ~5s; falls back to turn-end on watcher failure | belt-and-suspenders |
 | **`off`** | no automatic delivery | manual `/agmsg` only | minimalists |
@@ -222,6 +223,7 @@ How incoming messages reach your agent. Pick one at first join via the prompt, o
 
 ```
 /agmsg mode monitor    — switch this project to real-time push (Claude Code)
+/agmsg mode longpoll   — Codex Stop hook waits up to 8 hours for incoming messages
 /agmsg mode turn       — switch to between-turns checking
 /agmsg mode both       — monitor with turn as a safety net
 /agmsg mode off        — manual /agmsg only
@@ -231,6 +233,8 @@ How incoming messages reach your agent. Pick one at first join via the prompt, o
 Settings are per-project. Each `<project>/.claude/settings.local.json` gets exactly the hooks the chosen mode needs — repeated `set` calls are idempotent.
 
 **Monitor priming**: in `monitor` mode, the receiving agent doesn't react to its first inbound message until it has taken at least one turn this session. If you've just started a fresh session and a teammate has already sent something, nudge the agent with any short message ("hi") to prime it — subsequent messages stream in real time.
+
+**Codex longpoll priming**: `longpoll` starts only after Codex finishes a normal turn and reaches the Stop hook. After enabling `mode longpoll` and trusting the hook in `/hooks`, send a harmless prompt such as `Reply exactly with ARM-READY. Do not edit files or run tools.`. Once that response completes, leave the TUI idle; incoming agmsg messages will auto-continue the session while the Stop hook is armed.
 
 ### Migrating from legacy `hook on/off`
 
@@ -251,7 +255,7 @@ The command updates `db/config.yaml`, rewrites the project's hook entries, and p
 /agmsg history                          — message history
 /agmsg team                             — list team members
 /agmsg send <agent> <message>           — send message
-/agmsg mode <monitor|turn|both|off>     — switch delivery mode
+/agmsg mode <monitor|longpoll|turn|both|off> — switch delivery mode
 /agmsg mode                             — show current mode
 /agmsg actas <name>                     — switch to another role in this project (create if needed)
 /agmsg drop <name>                      — remove a role from this project
@@ -268,7 +272,11 @@ The command updates `db/config.yaml`, rewrites the project's hook entries, and p
 $agmsg                          — or /skills → agmsg
 ```
 
-Codex supports `mode monitor` as a **beta** app-server bridge, plus `mode turn` and `mode off`.
+Codex supports `mode longpoll`, `mode monitor` as a **beta** app-server bridge, plus `mode turn` and `mode off`. `mode both` is not supported for Codex.
+
+`mode longpoll` is Codex-only and has no extra runtime dependency beyond bash and sqlite3. After each Codex Stop event, the hook waits up to 8 hours for agmsg messages and polls every 5 seconds by default; when one arrives it reuses `check-inbox.sh` and returns a single `decision:block`. Setting the mode only changes the project hook; send one normal prompt after trusting it so Codex reaches Stop and arms longpoll. If no message arrives, it exits silently, with no model call or token use. Once the 8-hour wait times out, longpoll is not armed again until your next normal Codex turn reaches Stop. Tune it with `AGMSG_CODEX_LONGPOLL_WAIT_SECONDS` and `AGMSG_CODEX_LONGPOLL_INTERVAL`.
+
+Avoid running multiple Codex longpoll sessions for the same project and identity at the same time.
 
 > ⚠️ **The monitor beta changes how Codex starts — opt in only if you understand it.** Codex has no Monitor tool, so `mode monitor` installs a shim at `~/.agents/bin/codex` and asks you to put `~/.agents/bin` **first on your PATH**, so `codex` then resolves to the shim instead of the real binary. In monitor-mode projects the shim routes interactive launches through a bridge that turns incoming agmsg messages into turns on the current Codex thread; `codex exec` and non-monitor projects pass straight through to the real Codex. It depends on experimental Codex app-server behavior and has known rough edges (orphans on TUI close — #149; one identity per project — #150).
 
@@ -459,9 +467,10 @@ writable_roots = [
 ]
 ```
 
-Codex only supports `mode turn` and `mode off`; it does not have Claude Code's
-Monitor tool. The sandbox allowlist is still required for writes performed by
-manual `$agmsg` commands and turn-end inbox checks.
+Codex supports `mode longpoll`, `mode monitor` beta, `mode turn`, and `mode off`.
+It does not support `mode both`. The sandbox allowlist is still required for
+writes performed by manual `$agmsg` commands, longpoll delivery, and turn-end
+inbox checks.
 
 Some Codex runtimes or automations may inject a managed permission profile for a
 single run. In that case, the run-specific writable roots must also include the

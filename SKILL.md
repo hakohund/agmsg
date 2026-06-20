@@ -85,10 +85,11 @@ Do NOT manually edit config files. Always use join.sh.
 
 # Set delivery mode for this project. Replaces the legacy hook.sh on/off,
 # which is kept as a deprecated alias only.
-#   monitor — real-time push via SessionStart + Monitor tool (claude-code only)
-#   turn    — Stop-hook pulls at the end of each assistant turn
-#   both    — monitor primary, turn as fallback
-#   off     — no automatic delivery
+#   monitor  — real-time push via SessionStart + Monitor tool, or Codex beta bridge
+#   longpoll — Codex-only Stop hook waits up to 8 hours; send one normal prompt after /hooks trust to arm it
+#   turn     — Stop-hook pulls at the end of each assistant turn
+#   both     — monitor primary, turn as fallback (not supported for Codex)
+#   off      — no automatic delivery
 ~/.agents/skills/agmsg/scripts/delivery.sh set <mode> <type> "$(pwd)"
 ~/.agents/skills/agmsg/scripts/delivery.sh status <type> "$(pwd)"
 

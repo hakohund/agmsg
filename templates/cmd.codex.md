@@ -52,7 +52,11 @@ Four possible outputs:
        2) off     — No automatic delivery
                     Manual $__SKILL_NAME__ only.
 
-       3) monitor — Real-time push (BETA, advanced)
+       3) longpoll — Wait for messages after each response
+                     Stop hook waits up to 8 hours, with no extra dependencies
+                     and no model call when no message arrives.
+
+       4) monitor — Real-time push (BETA, advanced)
                     Installs a `codex` shim on PATH and routes launches through an
                     app-server bridge. Opt in ONLY if you understand PATH precedence
                     and accept experimental behavior. See docs/codex-monitor-beta.md.
@@ -61,8 +65,9 @@ Four possible outputs:
      ```
 
      - **Wait for the user's answer before proceeding.** Empty input means `1` (turn).
-     - Map the chosen number to a mode (`1`→`turn`, `2`→`off`, `3`→`monitor`) and run:
+     - Map the chosen number to a mode (`1`→`turn`, `2`→`off`, `3`→`longpoll`, `4`→`monitor`) and run:
        `~/.agents/skills/__SKILL_NAME__/scripts/delivery.sh set <mode> codex "$(pwd)"`
+     - If longpoll is chosen, tell the user: "Codex longpoll is enabled. Review and trust the hook with `/hooks` if Codex asks. Then send one harmless prompt, for example `Reply exactly with ARM-READY. Do not edit files or run tools.`, so Codex finishes a turn and arms the Stop hook. After that response completes, leave the TUI idle; incoming agmsg messages will auto-continue the session."
      - If monitor is chosen, tell the user: "Codex monitor is a BETA that changes how `codex` starts — it installs a `codex` shim and needs `~/.agents/bin` first on PATH. If the output says `~/.agents/bin` is not on PATH, add `export PATH=\"$HOME/.agents/bin:$PATH\"` to your shell profile, restart the shell, then launch future sessions with normal `codex`. If shim installation was refused because `~/.agents/bin/codex` already exists, use `~/.agents/skills/__SKILL_NAME__/scripts/codex-monitor.sh` or resolve that command conflict. The bridge starts on the **first turn** of a new Codex session (the SessionStart hook fires on your first message, not the moment Codex opens), so **restart your Codex session and send one message for monitor to take effect** — this already-running session stays unmonitored until it restarts. For more info: https://github.com/fujibee/agmsg/blob/main/docs/codex-monitor-beta.md"
 
   6. Then check inbox for the newly joined team.
@@ -141,9 +146,10 @@ If argument is "mode" (no further args):
 2. Show the output to the user.
 
 If argument starts with "mode" followed by a mode name (e.g. "mode monitor"):
-1. Parse the mode. Codex supports `monitor` (beta bridge), `turn`, and `off` — reject `both` with: "Codex bridge beta supports `monitor`, `turn`, or `off`; `both` is not supported yet."
+1. Parse the mode. Codex supports `monitor` (beta bridge), `longpoll`, `turn`, and `off` — reject `both` with: "Codex bridge beta supports `monitor`, `longpoll`, `turn`, or `off`; `both` is not supported yet."
 2. Run: `~/.agents/skills/__SKILL_NAME__/scripts/delivery.sh set <mode> codex "$(pwd)"`
-3. If mode is `monitor`, tell the user: "Codex monitor beta is enabled. agmsg installs an optional `codex` shim automatically. If the output says `~/.agents/bin` is not on PATH, add `export PATH=\"$HOME/.agents/bin:$PATH\"` to your shell profile, restart the shell, then launch future sessions with normal `codex`. If shim installation was refused because `~/.agents/bin/codex` already exists, use `~/.agents/skills/__SKILL_NAME__/scripts/codex-monitor.sh` or resolve that command conflict. The bridge starts on the **first turn** of a new Codex session (the SessionStart hook fires on your first message, not the moment Codex opens), so **restart your Codex session and send one message for monitor to take effect** — this already-running session stays unmonitored until it restarts. For more info: https://github.com/fujibee/agmsg/blob/main/docs/codex-monitor-beta.md"
+3. If mode is `longpoll`, tell the user: "Codex longpoll is enabled. Review and trust the hook with `/hooks` if Codex asks. Then send one harmless prompt, for example `Reply exactly with ARM-READY. Do not edit files or run tools.`, so Codex finishes a turn and arms the Stop hook. After that response completes, leave the TUI idle; incoming agmsg messages will auto-continue the session."
+4. If mode is `monitor`, tell the user: "Codex monitor beta is enabled. agmsg installs an optional `codex` shim automatically. If the output says `~/.agents/bin` is not on PATH, add `export PATH=\"$HOME/.agents/bin:$PATH\"` to your shell profile, restart the shell, then launch future sessions with normal `codex`. If shim installation was refused because `~/.agents/bin/codex` already exists, use `~/.agents/skills/__SKILL_NAME__/scripts/codex-monitor.sh` or resolve that command conflict. The bridge starts on the **first turn** of a new Codex session (the SessionStart hook fires on your first message, not the moment Codex opens), so **restart your Codex session and send one message for monitor to take effect** — this already-running session stays unmonitored until it restarts. For more info: https://github.com/fujibee/agmsg/blob/main/docs/codex-monitor-beta.md"
 
 If argument is "hook on" (legacy alias):
 1. Run: `~/.agents/skills/__SKILL_NAME__/scripts/delivery.sh set turn codex "$(pwd)"`
