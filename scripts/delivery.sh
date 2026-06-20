@@ -11,6 +11,7 @@ set -euo pipefail
 #
 # Modes:
 #   monitor  — SessionStart hook → Claude Code Monitor tool → watch.sh stream
+#   longpoll — Codex Stop hook waits for unread messages for up to 8 hours
 #   turn     — Stop hook → check-inbox.sh between turns (legacy)
 #   both     — monitor primary; turn as per-session safety net
 #   off      — no automatic delivery
@@ -140,6 +141,7 @@ add_event_entry_file() {
   local event="$2"
   local cmd="$3"
   local hook_type="${4:-}"
+  local timeout="${5:-}"
   local sql_path
   sql_path=$(sql_readfile_path "$path")
 
@@ -148,6 +150,13 @@ add_event_entry_file() {
     local cw; cw=$(windows_wrap "$cmd")
     cw="${cw//\\/\\\\}"; cw="${cw//\"/\\\"}"
     hook_inner="$hook_inner,\"commandWindows\":\"$cw\""
+  fi
+  if [ -n "$timeout" ]; then
+    case "$timeout" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$timeout" -gt 0 ] || return 1
+    hook_inner="$hook_inner,\"timeout\":$timeout"
   fi
   local entry="{\"matcher\":\"\",\"hooks\":[{$hook_inner}]}"
   local entry_esc
@@ -378,6 +387,10 @@ apply_settings() {
       local cmd="'$SKILL_DIR/scripts/check-inbox.sh' '$type' '$project'"
       add_event_entry_file "$tmp_state" "Stop" "$cmd" "$type"
       ;;
+    longpoll)
+      local cmd="'$SKILL_DIR/scripts/codex-longpoll.sh' '$type' '$project'"
+      add_event_entry_file "$tmp_state" "Stop" "$cmd" "$type" "86460"
+      ;;
     both)
       local ss="'$SKILL_DIR/scripts/session-start.sh' '$type' '$project'"
       local se="'$SKILL_DIR/scripts/session-end.sh'   '$type' '$project'"
@@ -391,7 +404,7 @@ apply_settings() {
       ;;
     *)
       rm -f "$tmp_state"
-      echo "Unknown mode: $mode (use monitor|turn|both|off)" >&2
+      echo "Unknown mode: $mode (use monitor|longpoll|turn|both|off)" >&2
       return 1
       ;;
   esac
@@ -496,11 +509,15 @@ do_set() {
   local TYPE="${2:?Missing type}"
   local PROJECT="${3:?Missing project_path}"
 
-  case "$MODE" in monitor|turn|both|off) ;; *)
-    echo "Unknown mode: $MODE (use monitor|turn|both|off)" >&2; exit 1 ;;
+  case "$MODE" in monitor|longpoll|turn|both|off) ;; *)
+    echo "Unknown mode: $MODE (use monitor|longpoll|turn|both|off)" >&2; exit 1 ;;
   esac
+  if [ "$MODE" = "longpoll" ] && [ "$TYPE" != "codex" ]; then
+    echo "Error: 'longpoll' mode is only supported for codex." >&2
+    exit 1
+  fi
   if [ "$TYPE" = "codex" ] && [ "$MODE" = "both" ]; then
-    echo "Error: 'both' mode is not supported for codex bridge beta. Use 'monitor', 'turn', or 'off'." >&2
+    echo "Error: 'both' mode is not supported for codex bridge beta. Use 'monitor', 'longpoll', 'turn', or 'off'." >&2
     exit 1
   fi
 
@@ -552,6 +569,16 @@ do_set() {
         emit_monitor_directive "$TYPE" "$PROJECT"
       fi
       ;;
+    longpoll)
+      echo "Codex longpoll mode enabled."
+      echo "Waits for agmsg messages for up to 8 hours after each Stop event."
+      echo "Review/trust the changed project hook with /hooks when Codex requests it."
+      local stopped
+      stopped=$(stop_codex_bridge "$PROJECT")
+      if [ "${stopped:-0}" -gt 0 ]; then
+        echo "Stopped $stopped Codex bridge process(es) for this project and cleaned their run files."
+      fi
+      ;;
     turn)
       echo "Future sessions: Stop hook will check inbox between turns."
       # Stop only THIS project's watcher; other projects/sessions keep theirs.
@@ -596,10 +623,16 @@ do_status() {
       fi
       echo "mode: $mode"
     else
-      local has_ss=0 has_st=0
+      local has_ss=0 has_st=0 has_longpoll=0
       if [ -f "$hf" ]; then
         local sql_hf
         sql_hf=$(sql_readfile_path "$hf")
+        has_longpoll=$(sqlite3 :memory: "
+          SELECT EXISTS(
+            SELECT 1 FROM json_each(json_extract(readfile('$sql_hf'), '\$.hooks.Stop')) AS s,
+              json_each(json_extract(s.value, '\$.hooks')) AS h
+            WHERE instr(json_extract(h.value, '\$.command'), 'codex-longpoll.sh') > 0
+          );" 2>/dev/null || echo 0)
         has_ss=$(sqlite3 :memory: "
           SELECT EXISTS(
             SELECT 1 FROM json_each(json_extract(readfile('$sql_hf'), '\$.hooks.SessionStart')) AS s,
@@ -614,7 +647,8 @@ do_status() {
           );" 2>/dev/null || echo 0)
       fi
       local mode="off"
-      if [ "$has_ss" = "1" ] && [ "$has_st" = "1" ]; then mode="both"
+      if [ "$has_longpoll" = "1" ]; then mode="longpoll"
+      elif [ "$has_ss" = "1" ] && [ "$has_st" = "1" ]; then mode="both"
       elif [ "$has_ss" = "1" ]; then mode="monitor"
       elif [ "$has_st" = "1" ]; then mode="turn"
       fi

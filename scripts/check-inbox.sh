@@ -6,6 +6,10 @@ set -euo pipefail
 
 TYPE="${1:?Usage: check-inbox.sh <type> <project_path>}"
 PROJECT="${2:?Missing project_path}"
+FORCE_CHECK=0
+if [ "${AGMSG_CHECK_INBOX_FORCE:-0}" = "1" ]; then
+  FORCE_CHECK=1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -24,8 +28,10 @@ if [ ! -t 0 ]; then
 fi
 
 # Prevent infinite loop: if stop hook is already active, exit silently
-if echo "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true' 2>/dev/null; then
-  exit 0
+if [ "$FORCE_CHECK" -ne 1 ]; then
+  if echo "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true' 2>/dev/null; then
+    exit 0
+  fi
 fi
 
 # Defer to the monitor watcher when one is alive for this session.
@@ -73,35 +79,37 @@ fi
 # when the default db dir doesn't exist.
 MARKER="$SKILL_DIR/run/.lastcheck-$AGENT"
 
-if [ -f "$MARKER" ]; then
-  if [ "$(uname)" = "Darwin" ]; then
-    last=$(stat -f %m "$MARKER")
-  else
-    last=$(stat -c %Y "$MARKER")
-  fi
-  now=$(date +%s)
-  # Prefer the new delivery.turn.check_interval; fall back to legacy
-  # hook.check_interval for users who haven't migrated.
-  INTERVAL=$("$SCRIPT_DIR/config.sh" get delivery.turn.check_interval "")
-  [ -z "$INTERVAL" ] && INTERVAL=$("$SCRIPT_DIR/config.sh" get hook.check_interval 60)
-  case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=60 ;; esac
-  if [ $(( now - last )) -lt "$INTERVAL" ]; then
-    case "$TYPE" in
-      codex|copilot)
-        cat <<'ENDJSON'
+if [ "$FORCE_CHECK" -ne 1 ]; then
+  if [ -f "$MARKER" ]; then
+    if [ "$(uname)" = "Darwin" ]; then
+      last=$(stat -f %m "$MARKER")
+    else
+      last=$(stat -c %Y "$MARKER")
+    fi
+    now=$(date +%s)
+    # Prefer the new delivery.turn.check_interval; fall back to legacy
+    # hook.check_interval for users who haven't migrated.
+    INTERVAL=$("$SCRIPT_DIR/config.sh" get delivery.turn.check_interval "")
+    [ -z "$INTERVAL" ] && INTERVAL=$("$SCRIPT_DIR/config.sh" get hook.check_interval 60)
+    case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=60 ;; esac
+    if [ $(( now - last )) -lt "$INTERVAL" ]; then
+      case "$TYPE" in
+        codex|copilot)
+          cat <<'ENDJSON'
 {
   "continue": true,
   "systemMessage": "agmsg: check skipped (cooldown)"
 }
 ENDJSON
-        ;;
-    esac
-    exit 0
+          ;;
+      esac
+      exit 0
+    fi
   fi
-fi
 
-mkdir -p "$SKILL_DIR/run"
-touch "$MARKER"
+  mkdir -p "$SKILL_DIR/run"
+  touch "$MARKER"
+fi
 
 # Check for unread messages and mark as read
 DB="$(agmsg_db_path)"

@@ -27,7 +27,7 @@ commands:
   history [agent] [limit]
   team [team]
   config [show|set ...]
-  mode [turn|off]
+  mode [monitor|longpoll|turn|both|off]
   join <team> <agent>
   reset [agent]
   actas <agent>
@@ -211,14 +211,14 @@ case "$COMMAND" in
         run_script delivery.sh status "$AGENT_TYPE" "$PROJECT"
         ;;
       1)
-        if [ "$AGENT_TYPE" = "codex" ] && { [ "$1" = "monitor" ] || [ "$1" = "both" ]; }; then
-          echo "Codex has no Monitor tool; only 'turn' or 'off' modes are supported." >&2
+        if [ "$AGENT_TYPE" = "codex" ] && [ "$1" = "both" ]; then
+          echo "Codex bridge beta supports 'monitor', 'longpoll', 'turn', or 'off'; 'both' is not supported yet." >&2
           exit 2
         fi
         run_script delivery.sh set "$1" "$AGENT_TYPE" "$PROJECT"
         ;;
       *)
-        echo "usage: agmsg mode [monitor|turn|both|off]" >&2
+        echo "usage: agmsg mode [monitor|longpoll|turn|both|off]" >&2
         exit 2
         ;;
     esac
